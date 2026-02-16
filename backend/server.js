@@ -4,6 +4,8 @@ import cors from 'cors';
 import connectDB from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import profileRoutes from './routes/profileRoutes.js';
+import assessmentsRoutes from './routes/assessmentRoutes.js';
+import sessionRoutes from './routes/sessionRoutes.js';
 import { notFound, errorHandler } from './middleware/errorMiddleware.js';
 
 // Load env vars
@@ -31,6 +33,8 @@ app.get('/', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/user', profileRoutes);
+app.use('/api/assessments', assessmentsRoutes);
+app.use('/api/sessions', sessionRoutes);
 
 // Error Middleware
 app.use(notFound);

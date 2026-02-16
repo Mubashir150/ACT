@@ -1,8 +1,7 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import MoodCheckIn from './MoodCheckIn';
-import { THERAPY_SESSIONS, type User, type SessionResult, type SessionData } from '../../types';
+import { type User, type SessionResult, type SessionData } from '../../types';
 import { generateGuidedMeditation, decodeBase64, decodeAudioData } from '../services/geminiService';
 import { storageService } from '../services/storageService';
 
@@ -12,10 +11,17 @@ interface VirtualSessionProps {
   user: User;
 }
 
+const BASE_URL = "http://localhost:5000/api";
+
 const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
   const navigate = useNavigate();
   const { sessionNumber } = useParams();
-  const sessionIdx = sessionNumber ? parseInt(sessionNumber, 10) - 1 : 0;
+  //const sessionIdx = sessionNumber ? parseInt(sessionNumber, 10) - 1 : 0;
+
+  // Template from database
+  const [sessionTemplate, setSessionTemplate] = useState<any>(null);
+  const [currentStepIdx, setCurrentStepIdx] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
   
   const [step, setStep] = useState<SessionStep>('mood');
   const [isPaused, setIsPaused] = useState(false);
@@ -26,7 +32,10 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
   // Results to be committed to DB
   const [moodBefore, setMoodBefore] = useState<number>(3);
   
-  // Session 1 state
+  // Generic session state - now more flexible
+  const [sessionResponses, setSessionResponses] = useState<Record<string, any>>({});
+  
+  // Session 1 state (keeping for backward compatibility)
   const [q1Responses, setQ1Responses] = useState<string[]>([]);
   const [q1Other, setQ1Other] = useState('');
   const [q2Response, setQ2Response] = useState<boolean | null>(null);
@@ -45,11 +54,46 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
 
-  const currentSession = THERAPY_SESSIONS[sessionIdx] || THERAPY_SESSIONS[0];
+  // Fetch session template from API
+  useEffect(() => {
+    const fetchTemplate = async () => {
+      try {
+        setIsLoading(true);
+        const res = await fetch(`${BASE_URL}/sessions/${sessionNumber}`);
+        if (!res.ok) {
+          throw new Error('Failed to fetch session template');
+        }
+        const data = await res.json();
+        setSessionTemplate(data);
+        console.log('Loaded session template:', data);
+      } catch (error) {
+        console.error('Error fetching template:', error);
+        alert('Error loading session. Please try again.');
+        navigate('/');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchTemplate();
+  }, [sessionNumber, navigate]);
+
+  const goToNextStep = () => {
+    if (!sessionTemplate) return;
+    
+    if (currentStepIdx < sessionTemplate.steps.length - 1) {
+      const nextStepId = sessionTemplate.steps[currentStepIdx + 1].stepId;
+      setStep(nextStepId as SessionStep);
+      setCurrentStepIdx(currentStepIdx + 1);
+    } else {
+      finishSession();
+    }
+  };
 
   const logStep = (stepId: string, inputValue: any, stepTitle?: string) => {
+    if (!sessionTemplate) return;
+    
     const data: SessionData = {
-      sessionNumber: currentSession.number,
+      sessionNumber: sessionTemplate.sessionNumber,
       stepId,
       stepTitle,
       inputValue,
@@ -62,15 +106,20 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
     setMoodBefore(score);
     logStep('session-start-mood', score, 'Pre-session Mood Check-in');
     setStep('intro');
+    setCurrentStepIdx(1); // Move to next step after mood
   };
 
   const commitToDB = (isComplete: boolean = false) => {
-    const reflections = currentSession.number === 1 
+    if (!sessionTemplate) return;
+    
+    const reflections = sessionTemplate.sessionNumber === 1 
       ? { q1Responses, q1Other, q2Response, q3Response, q4Response }
-      : { s2PracticeReflection, s2InnerWorld };
+      : sessionTemplate.sessionNumber === 2
+      ? { s2PracticeReflection, s2InnerWorld }
+      : sessionResponses;
 
     const result: SessionResult = {
-      sessionNumber: currentSession.number,
+      sessionNumber: sessionTemplate.sessionNumber,
       timestamp: new Date().toISOString(),
       moodBefore: moodBefore,
       reflections: reflections,
@@ -86,25 +135,33 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
     setStep('reflection');
   };
 
+  const getGroundingPrompt = () => {
+    if (!sessionTemplate) return '';
+    
+    const sessionNum = sessionTemplate.sessionNumber;
+    
+    if (sessionNum === 1) {
+      return `Dropping the Anchor meditation: Sit or lie down in a position that feels safe and relaxed. Feel the weight of your body. Bring attention to your feet. Notice tension. Look around and notice three things you can see, two things you hear, one thing you can touch. Breathe. Silently say: I am here. I am safe. I am in the present.`;
+    } else if (sessionNum === 2) {
+      return `"Leaves on a Stream" Exercise:
+      (1) Sit in a comfortable position and either close your eyes or rest them gently on a fixed spot in the room.
+      (2) Visualize yourself sitting beside a gently flowing stream with leaves floating along the surface of the water. (Include a 10 second silence here)
+      (3) For the next few minutes, take each thought that enters your mind and place it on a leaf… let it float by. Do this with each thought – pleasurable, painful, or neutral. Even if you have joyous or enthusiastic thoughts, place them on a leaf and let them float by.
+      (4) If your thoughts momentarily stop, continue to watch the stream. Sooner or later, your thoughts will start up again. (Include a 20 second silence here)
+      (5) Allow the stream to flow at its own pace. Don't try to speed it up and rush your thoughts along. You're not trying to rush the leaves along or "get rid" of your thoughts. You are allowing them to come and go at their own pace.
+      (6) If your mind says "This is dumb," "I'm bored," or "I'm not doing this right" place those thoughts on leaves, too, and let them pass. (Include a 20 second silence here)
+      (7) If a leaf gets stuck, allow it to hang around until it's ready to float by. If the thought comes up again, watch it float by another time. (Include a 20 second silence here)
+      (8) If a difficult or painful feeling arises, simply acknowledge it. Say to yourself, "I notice myself having a feeling of boredom/impatience/frustration." Place those thoughts on leaves and allow them float along.
+      (9) From time to time, your thoughts may hook you and distract you from being fully present in this exercise. This is normal. As soon as you realize that you have become sidetracked, gently bring your attention back to the exercise.`;
+    }
+    
+    return `Mindfulness meditation: Take a comfortable position. Close your eyes or lower your gaze. Bring awareness to your breath. Notice each inhale and exhale. When your mind wanders, gently return to your breath. Stay here for a few moments.`;
+  };
+
   const startGroundingAudio = async () => {
     setAudioLoading(true);
     try {
-      let prompt = "";
-      if (currentSession.number === 1) {
-        prompt = `Dropping the Anchor meditation: Sit or lie down in a position that feels safe and relaxed. Feel the weight of your body. Bring attention to your feet. Notice tension. Look around and notice three things you can see, two things you hear, one thing you can touch. Breathe. Silently say: I am here. I am safe. I am in the present.`;
-      } else if (currentSession.number === 2) {
-        prompt = `"Leaves on a Stream" Exercise:
-        (1) Sit in a comfortable position and either close your eyes or rest them gently on a fixed spot in the room.
-        (2) Visualize yourself sitting beside a gently flowing stream with leaves floating along the surface of the water. (Include a 10 second silence here)
-        (3) For the next few minutes, take each thought that enters your mind and place it on a leaf… let it float by. Do this with each thought – pleasurable, painful, or neutral. Even if you have joyous or enthusiastic thoughts, place them on a leaf and let them float by.
-        (4) If your thoughts momentarily stop, continue to watch the stream. Sooner or later, your thoughts will start up again. (Include a 20 second silence here)
-        (5) Allow the stream to flow at its own pace. Don’t try to speed it up and rush your thoughts along. You’re not trying to rush the leaves along or “get rid” of your thoughts. You are allowing them to come and go at their own pace.
-        (6) If your mind says “This is dumb,” “I’m bored,” or “I’m not doing this right” place those thoughts on leaves, too, and let them pass. (Include a 20 second silence here)
-        (7) If a leaf gets stuck, allow it to hang around until it’s ready to float by. If the thought comes up again, watch it float by another time. (Include a 20 second silence here)
-        (8) If a difficult or painful feeling arises, simply acknowledge it. Say to yourself, “I notice myself having a feeling of boredom/impatience/frustration.” Place those thoughts on leaves and allow them float along.
-        (9) From time to time, your thoughts may hook you and distract you from being fully present in this exercise. This is normal. As soon as you realize that you have become sidetracked, gently bring your attention back to the exercise.`;
-      }
-
+      const prompt = getGroundingPrompt();
       const { audioBase64 } = await generateGuidedMeditation(prompt);
       
       if (!audioContextRef.current) {
@@ -160,7 +217,7 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
   };
 
   const handleExitSession = () => {
-    commitToDB(false); // Save partial progress
+    commitToDB(false);
     stopAudio();
     if (audioContextRef.current) {
       audioContextRef.current.close();
@@ -169,30 +226,41 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
   };
 
   const renderContent = () => {
+    if (!sessionTemplate) {
+      return (
+        <div className="flex items-center justify-center h-64">
+          <div className="text-center space-y-4">
+            <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+            <p className="text-slate-500 font-medium">Loading session...</p>
+          </div>
+        </div>
+      );
+    }
+
     switch (step) {
       case 'intro':
         return (
           <div className="space-y-8 animate-in slide-in-from-right-4 duration-500">
             <div className="bg-indigo-600 rounded-[3rem] p-10 md:p-16 text-white shadow-2xl relative overflow-hidden">
               <div className="absolute top-0 right-0 p-12 opacity-10">
-                <i className={`fa-solid ${currentSession.number === 2 ? 'fa-leaf' : 'fa-handshake'} text-[12rem]`}></i>
+                <i className={`fa-solid ${sessionTemplate.sessionNumber === 2 ? 'fa-leaf' : 'fa-handshake'} text-[12rem]`}></i>
               </div>
               <div className="relative z-10 space-y-6">
                 <h3 className="text-3xl md:text-4xl font-black tracking-tight">
-                  {currentSession.number === 2 ? `${clientName}, welcome back!` : `Welcome to Session ${currentSession.number}`}
+                  {sessionTemplate.sessionNumber === 2 ? `${clientName}, welcome back!` : `Welcome to Session ${sessionTemplate.sessionNumber}`}
                 </h3>
                 <div className="prose prose-indigo text-indigo-100 text-lg leading-relaxed max-w-2xl">
-                  {currentSession.number === 2 && <p className="font-bold">I hope you’ve had a good week.</p>}
+                  {sessionTemplate.sessionNumber === 2 && <p className="font-bold">I hope you've had a good week.</p>}
                   <p>Find a position that feels comfortable for your body. Choose a place where you feel safe and have as few distractions as possible.</p>
                   <p className="italic">If at any point you feel uncomfortable, you can adjust your position or pause.</p>
                 </div>
               </div>
             </div>
             <button 
-              onClick={() => currentSession.number === 1 ? setStep('questions') : setStep('practice-check')} 
+              onClick={goToNextStep}
               className="w-full py-5 bg-slate-900 text-white rounded-3xl font-black text-lg shadow-xl hover:bg-slate-800 transition-all"
             >
-              {currentSession.number === 1 ? 'Begin Exploration' : 'Continue'}
+              {sessionTemplate.sessionNumber === 1 ? 'Begin Exploration' : 'Continue'}
             </button>
           </div>
         );
@@ -206,7 +274,7 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
             </div>
             <div className="bg-white rounded-[2.5rem] p-10 border border-slate-200 shadow-sm space-y-6">
               <p className="text-lg text-slate-700 font-medium">
-                “Last week, we practiced the ‘Dropping the Anchor’ exercise. Can you tell me when and where you did it? Did you notice any changes in your body, mind, or emotions while doing it?”
+                "Last week, we practiced the 'Dropping the Anchor' exercise. Can you tell me when and where you did it? Did you notice any changes in your body, mind, or emotions while doing it?"
               </p>
               <textarea 
                 value={s2PracticeReflection}
@@ -218,7 +286,7 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
             <button onClick={() => { 
               logStep('practice-reflection', s2PracticeReflection, 'Reflecting on last week practice');
               commitToDB(); 
-              setStep('inner-world'); 
+              goToNextStep();
             }} className="w-full py-5 bg-slate-900 text-white rounded-3xl font-black text-lg shadow-xl hover:bg-slate-800 transition-all">
               Save & Next Step
             </button>
@@ -257,7 +325,7 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
               logStep('inner-world-feelings', s2InnerWorld.feelings, 'Session 2: Current Feelings');
               logStep('inner-world-sensations', s2InnerWorld.sensations, 'Session 2: Current Sensations');
               commitToDB(); 
-              setStep('noticing-conversion'); 
+              goToNextStep();
             }} className="w-full py-5 bg-slate-900 text-white rounded-3xl font-black text-lg shadow-xl hover:bg-slate-800 transition-all">
               Continue to Transformation
             </button>
@@ -301,7 +369,7 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
             </div>
             <button onClick={() => {
               logStep('noticing-exercise-attempt', true, 'Acknowledged noticing exercise');
-              setStep('grounding');
+              goToNextStep();
             }} className="w-full py-5 bg-slate-900 text-white rounded-3xl font-black text-lg shadow-xl hover:bg-slate-800 transition-all">
               Next: Leaves on a Stream
             </button>
@@ -398,12 +466,12 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
                 logStep('immediate-relief-vs-long-term-stress', q3Response, 'Momentary help vs later stress');
                 logStep('cost-of-avoidance', q4Response, 'What did it cost you?');
                 commitToDB(); 
-                setStep('grounding'); 
+                goToNextStep();
               }} 
               disabled={q2Response === null || q3Response === null}
               className="w-full py-5 bg-slate-900 text-white rounded-3xl font-black text-lg shadow-xl hover:bg-slate-800 transition-all disabled:opacity-50"
             >
-              Next: Dropping the Anchor
+              Next Step
             </button>
           </div>
         );
@@ -413,10 +481,10 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
           <div className="space-y-10 animate-in slide-in-from-right-4 duration-500">
             <div className="text-center">
               <h3 className="text-3xl font-black text-slate-800 tracking-tight">
-                {currentSession.number === 2 ? 'Leaves on a Stream' : 'Dropping the Anchor'}
+                {sessionTemplate.sessionNumber === 2 ? 'Leaves on a Stream' : 'Dropping the Anchor'}
               </h3>
               <p className="text-slate-500 mt-2 italic font-medium">
-                {currentSession.number === 2 
+                {sessionTemplate.sessionNumber === 2 
                   ? 'A visualization to practice observing your thoughts without getting hooked.' 
                   : 'A grounding exercise to steady yourself in the present moment.'}
               </p>
@@ -426,14 +494,14 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
               <div className="bg-slate-900 rounded-[3rem] p-10 text-white shadow-2xl space-y-8 h-fit lg:sticky lg:top-24">
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 bg-indigo-500 rounded-2xl flex items-center justify-center text-xl">
-                    <i className={`fa-solid ${currentSession.number === 2 ? 'fa-leaf' : 'fa-anchor'}`}></i>
+                    <i className={`fa-solid ${sessionTemplate.sessionNumber === 2 ? 'fa-leaf' : 'fa-anchor'}`}></i>
                   </div>
                   <h4 className="text-xl font-bold uppercase tracking-tight">Audio Guide</h4>
                 </div>
                 
                 <div className="bg-white/10 p-8 rounded-3xl border border-white/10 backdrop-blur-sm space-y-6">
                   <div className="flex items-center justify-between text-indigo-300 text-[10px] font-black uppercase tracking-widest">
-                    <span>{currentSession.number === 2 ? 'Leaves on a Stream' : 'Grounding Meditation'}</span>
+                    <span>{sessionTemplate.sessionNumber === 2 ? 'Leaves on a Stream' : 'Grounding Meditation'}</span>
                     <span>{isAudioPlaying ? (isAudioPaused ? 'Paused' : 'Playing') : 'Ready to Start'}</span>
                   </div>
                   <div className="flex items-center justify-center gap-8">
@@ -450,7 +518,7 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
 
                 <div className="p-6 bg-white/5 rounded-2xl border border-white/10">
                   <p className="text-xs italic leading-relaxed text-indigo-100">
-                    {currentSession.number === 2 
+                    {sessionTemplate.sessionNumber === 2 
                       ? "If your thoughts momentarily stop, continue to watch the stream. Sooner or later, your thoughts will start up again."
                       : "Notice any small changes in your body, mind, or mood. You can return to this exercise anytime you feel overwhelmed."}
                   </p>
@@ -458,13 +526,13 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
               </div>
 
               <div className="space-y-6">
-                {currentSession.number === 2 ? (
+                {sessionTemplate.sessionNumber === 2 ? (
                    [
                     { icon: 'fa-couch', text: 'Sit in a comfortable position and either close your eyes or rest them gently on a fixed spot in the room.' },
                     { icon: 'fa-stream', text: 'Visualize yourself sitting beside a gently flowing stream with leaves floating along the surface of the water.' },
                     { icon: 'fa-brain', text: 'For the next few minutes, take each thought that enters your mind and place it on a leaf… let it float by.' },
-                    { icon: 'fa-hourglass', text: 'Allow the stream to flow at its own pace. Don’t try to speed it up or get rid of thoughts.' },
-                    { icon: 'fa-wind', text: 'If your mind says “This is dumb,” place those thoughts on leaves, too, and let them pass.' },
+                    { icon: 'fa-hourglass', text: 'Allow the stream to flow at its own pace. Do not try to speed it up or get rid of thoughts.' },
+                    { icon: 'fa-wind', text: 'If your mind says "This is dumb," place those thoughts on leaves, too, and let them pass.' },
                     { icon: 'fa-hand-dots', text: 'If a difficult or painful feeling arises, simply acknowledge it and place it on a leaf.' },
                     { icon: 'fa-anchor', text: 'If you get sidetracked, gently bring your attention back to the visualization exercise.' }
                   ].map((step, i) => (
@@ -509,17 +577,18 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
               </div>
               <h2 className="text-3xl font-black text-slate-800 tracking-tight">Session Complete</h2>
               <p className="text-slate-500 font-medium italic">
-                {currentSession.number === 2 ? '"Leaves on a Stream."' : '"I am here. I am safe. I am in the present."'}
+                {sessionTemplate.title}
               </p>
             </div>
 
             <div className="bg-white p-10 rounded-[3rem] border border-slate-200 shadow-xl space-y-6">
               <h4 className="font-bold text-slate-800 uppercase text-xs tracking-widest text-center">Closing Insight</h4>
               <p className="text-slate-600 leading-relaxed text-center font-medium">
-                {currentSession.number === 2 
+                {sessionTemplate.sessionNumber === 2 
                   ? "Today, you've practiced the skill of acceptance—learning to let thoughts and feelings flow by without getting entangled in them. This is the art of unhooking. Carry this perspective with you throughout the week."
-                  : "Today, you've started the journey of noticing how your avoidance patterns work and practicing grounding yourself when things feel heavy. This is the first step toward creative hopelessness—realizing that fighting the pain hasn't worked, and choosing a different path instead."
-                }
+                  : sessionTemplate.sessionNumber === 1
+                  ? "Today, you've started the journey of noticing how your avoidance patterns work and practicing grounding yourself when things feel heavy. This is the first step toward creative hopelessness—realizing that fighting the pain hasn't worked, and choosing a different path instead."
+                  : "Thank you for completing this session. Continue practicing the skills you've learned today."}
               </p>
             </div>
 
@@ -529,8 +598,45 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
             </button>
           </div>
         );
+
+      default:
+        return (
+          <div className="text-center p-10">
+            <p className="text-slate-500">Unknown step: {step}</p>
+          </div>
+        );
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center space-y-4">
+          <div className="w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p className="text-slate-500 font-medium">Loading session template...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!sessionTemplate) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center space-y-4">
+          <div className="w-16 h-16 bg-rose-50 text-rose-500 rounded-2xl flex items-center justify-center text-2xl mx-auto">
+            <i className="fa-solid fa-exclamation-triangle"></i>
+          </div>
+          <p className="text-slate-700 font-medium">Session template not found</p>
+          <button 
+            onClick={() => navigate('/')}
+            className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold"
+          >
+            Return to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-6xl mx-auto pb-24 relative min-h-screen">
@@ -565,7 +671,7 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
       {/* Exit Confirmation Modal */}
       {showExitConfirm && (
         <div className="fixed inset-0 z-[110] bg-slate-900/95 backdrop-blur-lg flex items-center justify-center p-6 animate-in fade-in duration-300">
-          <div className="w-full max-sm bg-white rounded-[2.5rem] p-10 text-center shadow-2xl space-y-6">
+          <div className="w-full max-w-md bg-white rounded-[2.5rem] p-10 text-center shadow-2xl space-y-6">
             <div className="w-16 h-16 bg-rose-50 text-rose-500 rounded-2xl flex items-center justify-center text-2xl mx-auto">
               <i className="fa-solid fa-triangle-exclamation"></i>
             </div>
@@ -595,17 +701,26 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
         <div className="flex items-center gap-4">
           <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white text-xs"><i className="fa-solid fa-play"></i></div>
           <div>
-            <h1 className="text-sm font-black text-slate-800 uppercase tracking-tighter">Session {currentSession.number}: {currentSession.title}</h1>
+            <h1 className="text-sm font-black text-slate-800 uppercase tracking-tighter">
+              Session {sessionTemplate.sessionNumber}: {sessionTemplate.title}
+            </h1>
             <div className="flex gap-1.5 mt-0.5">
-               {['intro', 'practice-check', 'inner-world', 'noticing-conversion', 'grounding', 'reflection'].map((s, i) => (
-                 <div key={s} className={`h-1 rounded-full transition-all ${step === s ? 'w-8 bg-indigo-600' : i < ['intro', 'practice-check', 'inner-world', 'noticing-conversion', 'grounding', 'reflection'].indexOf(step) ? 'w-4 bg-emerald-400' : 'w-4 bg-slate-200'}`}></div>
+               {sessionTemplate.steps.map((s: any, i: number) => (
+                 <div 
+                   key={s.stepId} 
+                   className={`h-1 rounded-full transition-all ${
+                     i === currentStepIdx ? 'w-8 bg-indigo-600' : 
+                     i < currentStepIdx ? 'w-4 bg-emerald-400' : 
+                     'w-4 bg-slate-200'
+                   }`}
+                 ></div>
                ))}
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <button 
-            onClick={() => navigate(`/session/${currentSession.number}/details`)}
+            onClick={() => navigate(`/session/${sessionTemplate.sessionNumber}/details`)}
             className="w-10 h-10 rounded-full bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:text-indigo-600 transition-all"
             title="View Session Details"
           >
@@ -632,7 +747,7 @@ const VirtualSession: React.FC<VirtualSessionProps> = ({ user }) => {
 
       <div className={`px-6 md:px-10 transition-all duration-500 ${isPaused ? 'opacity-0 scale-95 blur-sm' : 'opacity-100'}`}>
         {step === 'mood' ? (
-          <MoodCheckIn sessionNumber={currentSession.number} onComplete={handleMoodComplete} />
+          <MoodCheckIn sessionNumber={sessionTemplate.sessionNumber} onComplete={handleMoodComplete} />
         ) : (
           renderContent()
         )}

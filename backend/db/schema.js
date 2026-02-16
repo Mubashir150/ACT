@@ -87,7 +87,8 @@ const AssessmentTemplateSchema = new Schema({
     id: String,
     text: String,
     type: { type: String, enum: ['LIKERT', 'TEXT', 'MULTIPLE_CHOICE', 'BOOLEAN'] },
-    options: [{ label: String, value: Schema.Types.Mixed }]
+    options: [{ label: String, value: Schema.Types.Mixed }],
+    cluster: { type: String }
   }],
   active: { type: Boolean, default: true }
 }, { timestamps: true });

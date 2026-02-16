@@ -415,7 +415,7 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
                 HIPAA Verified Account
               </div>
               <p className="text-[10px] text-emerald-600 leading-relaxed font-medium">
-                Your identity was verified via ID.me on Oct 12, 2023. Compliance
+                Your identity was verified via ID.me on {formatDate(profileData.createdAt)}. Compliance
                 status: Active.
               </p>
             </div>
