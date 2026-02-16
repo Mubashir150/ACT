@@ -45,6 +45,12 @@ const Assessments: React.FC = () => {
   const [userProfile, setUserProfile] = useState<{ name: string } | null>(null);
   const navigate = useNavigate();
 
+  const [nextSessionTemplate, setNextSessionTemplate] = useState<{
+    sessionNumber: number;
+    title: string;
+  } | null>(null);
+  const [isLocked, setIsLocked] = useState(false);
+
   // Loading and error states
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -107,14 +113,43 @@ const Assessments: React.FC = () => {
       setError(null);
 
       try {
-
         const profile = await userService.getProfile();
         setUserProfile(profile);
 
+        // 2. Weekly Logic: Check if user already did 2 sessions this week
+        const startOfWeek = new Date();
+        startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay()); // Sunday
+        startOfWeek.setHours(0, 0, 0, 0);
+
+        const completedThisWeek = (profile.sessionHistory || []).filter(
+          (s: any) => {
+            const completionDate = new Date(s.timestamp);
+            return s.status === "COMPLETED" && completionDate >= startOfWeek;
+          }
+        ).length;
+
+        if (completedThisWeek >= 2) {
+          setIsLocked(true);
+        }
+
+        const currentNum = profile.currentSession || 1;
+
+        try {
+          const sessionData = await userService.getSessionTemplate(currentNum);
+          setNextSessionTemplate(sessionData);
+        } catch (err) {
+          console.error("Could not fetch session details:", err);
+          // Fallback title if API fails
+          setNextSessionTemplate({
+            sessionNumber: currentNum,
+            title: "Next ACT Module",
+          });
+        }
+
         if (profile.currentClinicalSnapshot?.pcl5Total > 0) {
-          setStep('education'); // Skip directly to the "Start Session" screen
+          setStep("education"); // Skip directly to the "Start Session" screen
           setLoading(false);
-          return; 
+          return;
         }
 
         const [pdeqRes, pcl5Res, dersRes, aaqRes] = await Promise.all([
@@ -167,65 +202,66 @@ const Assessments: React.FC = () => {
   }, [step]);
 
   // ... inside the component
-const handleFinalSubmit = async () => {
-  setIsAssigning(true);
-  
+  const handleFinalSubmit = async () => {
+    setIsAssigning(true);
 
-  try {
-    // We define the three clinical sets we need to save
-    const assessmentsToSave = [
-      {
-        template: pcl5Template,
-        scores: pcl5Scores,
-        code: 'PCL5-V1',
-        total: calculateTotal(pcl5Scores),
-      },
-      {
-        template: dersTemplate,
-        scores: dersScores,
-        code: 'DERS18-V1',
-        total: getDERSGrandTotal(),
-      },
-      {
-        template: aaqTemplate,
-        scores: aaqScores,
-        code: 'AAQ-V1',
-        total: calculateTotal(aaqScores),
-      }
-    ];
+    try {
+      // We define the three clinical sets we need to save
+      const assessmentsToSave = [
+        {
+          template: pcl5Template,
+          scores: pcl5Scores,
+          code: "PCL5-V1",
+          total: calculateTotal(pcl5Scores),
+        },
+        {
+          template: dersTemplate,
+          scores: dersScores,
+          code: "DERS18-V1",
+          total: getDERSGrandTotal(),
+        },
+        {
+          template: aaqTemplate,
+          scores: aaqScores,
+          code: "AAQ-V1",
+          total: calculateTotal(aaqScores),
+        },
+      ];
 
-    // Use the Service File for each assessment
-    await Promise.all(
-      assessmentsToSave.map(async (item) => {
-        if (!item.template) return;
+      // Use the Service File for each assessment
+      await Promise.all(
+        assessmentsToSave.map(async (item) => {
+          if (!item.template) return;
 
-        // Clean mapping of state to the DB schema
-        const payload = {
-          templateId: (item.template as any)._id,
-          testType: item.code,
-          totalScore: item.total,
-          items: item.template.questions.map((q, i) => ({
-            questionId: q.id,
-            questionText: q.text,
-            value: item.scores[i],
-            // Pulling label dynamically from the question options
-            label: q.options.find(opt => opt.value === item.scores[i])?.label || ""
-          }))
-        };
+          // Clean mapping of state to the DB schema
+          const payload = {
+            templateId: (item.template as any)._id,
+            testType: item.code,
+            totalScore: item.total,
+            items: item.template.questions.map((q, i) => ({
+              questionId: q.id,
+              questionText: q.text,
+              value: item.scores[i],
+              // Pulling label dynamically from the question options
+              label:
+                q.options.find((opt) => opt.value === item.scores[i])?.label ||
+                "",
+            })),
+          };
 
-        // USING THE SERVICE FILE HERE
-        return saveAssessment(payload);
-      })
-    );
+          // USING THE SERVICE FILE HERE
+          return saveAssessment(payload);
+        })
+      );
 
-    setStep("education");
-  } catch (err) {
-    console.error("Critical submission failure:", err);
-    alert("Could not link with clinic. Please check your connection.");
-  } finally {
-    setIsAssigning(false);
-  }
-};
+      setStep("education");
+    } catch (err) {
+      console.error("Critical submission failure:", err);
+      alert("Could not link with clinic. Please check your connection.");
+    } finally {
+      setIsAssigning(false);
+    }
+  };
 
   const handleScore = (
     setter: React.Dispatch<React.SetStateAction<number[]>>,
@@ -398,8 +434,6 @@ const handleFinalSubmit = async () => {
       </div>
     );
   }
-
-  
 
   return (
     <div className="max-w-4xl mx-auto pb-24 animate-in fade-in duration-500">
@@ -888,7 +922,6 @@ const handleFinalSubmit = async () => {
                   ))}
                 </div>
               </div>
-              
 
               <div className="bg-slate-50 rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
                 <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6 flex justify-between">
@@ -1051,17 +1084,58 @@ const handleFinalSubmit = async () => {
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <button
-                  onClick={() => navigate("/session")}
-                  className="p-8 bg-indigo-600 text-white border-none rounded-[2.5rem] hover:bg-indigo-700 hover:shadow-2xl transition-all group text-left"
+                  disabled={isLocked}
+                  onClick={() =>
+                    !isLocked &&
+                    navigate(
+                      `/session/${nextSessionTemplate?.sessionNumber || 1}`
+                    )
+                  }
+                  className={`p-8 border-none rounded-[2.5rem] transition-all group text-left relative overflow-hidden ${
+                    isLocked
+                      ? "bg-slate-100 cursor-not-allowed border-slate-200"
+                      : "bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-2xl"
+                  }`}
                 >
-                  <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center text-xl mb-6 group-hover:scale-110 transition-transform">
-                    <i className="fa-solid fa-play"></i>
+                  {/* Lock Icon for visual feedback */}
+                  {isLocked && (
+                    <div className="absolute top-6 right-6 text-slate-300">
+                      <i className="fa-solid fa-lock text-2xl"></i>
+                    </div>
+                  )}
+                  <div
+                    className={`w-12 h-12 rounded-2xl flex items-center justify-center text-xl mb-6 transition-transform ${
+                      isLocked
+                        ? "bg-slate-200 text-slate-400"
+                        : "bg-white/20 text-white group-hover:scale-110"
+                    }`}
+                  >
+                    <i
+                      className={`fa-solid ${
+                        isLocked ? "fa-calendar-day" : "fa-play"
+                      }`}
+                    ></i>
                   </div>
-                  <h4 className="font-black text-xl mb-2 uppercase tracking-tight">
-                    Start Session 1
+                  <h4
+                    className={`font-black text-xl mb-2 uppercase tracking-tight ${
+                      isLocked ? "text-slate-400" : "text-white"
+                    }`}
+                  >
+                    {isLocked
+                      ? "Weekly Limit Reached"
+                      : `Start Session ${
+                          nextSessionTemplate?.sessionNumber || 1
+                        }`}
                   </h4>
-                  <p className="text-xs text-indigo-100 leading-relaxed font-medium uppercase tracking-widest">
-                    Creative Hopelessness
+                  <p
+                    className={`text-xs leading-relaxed font-medium uppercase tracking-widest ${
+                      isLocked ? "text-slate-400" : "text-indigo-100"
+                    }`}
+                  >
+                    {isLocked
+                      ? "Next session available next week"
+                      : nextSessionTemplate?.title ||
+                        "Loading session details..."}
                   </p>
                 </button>
                 <button

@@ -129,43 +129,62 @@ const ClientAssignments: React.FC<ClientAssignmentsProps> = ({ user, onUpdateUse
     onUpdateUser({ ...user, schedulePreference: pref });
   };
 
-  // Transform templates into therapy program format with dynamic status
-  const therapyProgram = useMemo(() => {
-    if (sessionTemplates.length === 0 || !userProfile) return [];
+ // Transform templates into therapy program format with dynamic status
+ const therapyProgram = useMemo(() => {
+  if (sessionTemplates.length === 0 || !userProfile) return [];
 
-    const userCurrentSession = userProfile.currentSession || 1;
-    const completedSessions = userProfile.sessionHistory?.filter(s => s.completed).map(s => s.sessionNumber) || [];
+  const userCurrentSession = userProfile.currentSession || 1;
+  const sessionHistory = userProfile.sessionHistory || [];
+  
+  // 1. Get all unique session numbers that are COMPLETED in the database
+  const completedSessionNumbers = sessionHistory
+    .filter(s => s.status === 'COMPLETED')
+    .map(s => s.sessionNumber);
 
-    return sessionTemplates.map((template, index) => {
-      const sessionNumber = template.sessionNumber;
-      const week = Math.ceil(sessionNumber / 2); // 2 sessions per week
-      
-      // Determine status
-      let status: 'Completed' | 'Current' | 'Locked';
-      if (completedSessions.includes(sessionNumber)) {
-        status = 'Completed';
-      } else if (sessionNumber === userCurrentSession) {
-        status = 'Current';
-      } else if (sessionNumber < userCurrentSession) {
-        status = 'Current'; // Allow access to skipped sessions
-      } else {
-        status = 'Locked';
-      }
+  // 2. Calculate how many sessions were completed THIS calendar week
+  const startOfWeek = new Date();
+  startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay()); // Sunday
+  startOfWeek.setHours(0,0,0,0);
 
-      // Get description from content mapper or use a default
-      const description = getSessionShortDescription(sessionNumber);
+  const completedThisWeek = sessionHistory.filter(s => {
+    if (s.status !== 'COMPLETED') return false;
+    const completionDate = new Date(s.timestamp);
+    return completionDate >= startOfWeek;
+  }).length;
 
-      return {
-        id: `s${sessionNumber}`,
-        number: sessionNumber,
-        title: template.title,
-        week,
-        status,
-        description,
-        moduleKey: template.moduleKey
-      } as TherapySessionTask;
-    });
-  }, [sessionTemplates, userProfile]);
+  const isWeekLimitReached = completedThisWeek >= 2;
+
+  return sessionTemplates.map((template) => {
+    const sessionNumber = template.sessionNumber;
+    const week = Math.ceil(sessionNumber / 2);
+    
+    let status: 'Completed' | 'Current' | 'Locked';
+
+    // PRIORITY 1: If it's in the completed list, it's always "Completed"
+    if (completedSessionNumbers.includes(sessionNumber)) {
+      status = 'Completed';
+    } 
+    // PRIORITY 2: If it's the next session to do...
+    else if (sessionNumber === userCurrentSession) {
+      // Lock it ONLY if they already finished 2 others this week
+      status = isWeekLimitReached ? 'Locked' : 'Current';
+    } 
+    // PRIORITY 3: Everything else is locked
+    else {
+      status = 'Locked';
+    }
+
+    return {
+      id: `s${sessionNumber}`,
+      number: sessionNumber,
+      title: template.title,
+      week,
+      status,
+      description: getSessionShortDescription(sessionNumber),
+      moduleKey: template.moduleKey
+    };
+  });
+}, [sessionTemplates, userProfile]);
 
   // Helper to generate dates based on chosen cadence
   const scheduledDates = useMemo(() => {

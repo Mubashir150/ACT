@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { generateGuidedMeditation, decodeBase64, decodeAudioData } from '../services/geminiService';
-import { getSessionDetailContent, getSessionShortDescription } from '../services/sessionDetailContentMap';
+import { getSessionDetailContent } from '../services/sessionDetailContentMap';
 
 const BASE_URL = "http://localhost:5000/api";
 

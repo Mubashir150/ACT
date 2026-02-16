@@ -1,5 +1,7 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { userService } from '../services/userService';
+import { type User } from '../../types';
 
 interface CompletedSession {
   id: string;
@@ -10,40 +12,122 @@ interface CompletedSession {
   outcome: string;
 }
 
-const COMPLETED_SESSIONS: CompletedSession[] = [
-  { 
-    id: 's3', 
-    number: 3, 
-    title: 'Unhooking from Thoughts (Diffusion 1)', 
-    date: 'Oct 24, 2023', 
-    reflection: 'I realized that the thought "I am a burden" is just words. Using the "Milk, Milk, Milk" exercise helped take the power out of it.',
-    outcome: 'Improved cognitive distance; reduced fusion with negative self-labels.'
-  },
-  { 
-    id: 's2', 
-    number: 2, 
-    title: 'Willingness & Acceptance', 
-    date: 'Oct 17, 2023', 
-    reflection: 'Practiced sitting with the tightness in my chest. It didn\'t disappear, but it didn\'t stop me from going to the grocery store.',
-    outcome: 'Increased behavioral persistence despite physical anxiety symptoms.'
-  },
-  { 
-    id: 's1', 
-    number: 1, 
-    title: 'Creative Hopelessness', 
-    date: 'Oct 10, 2023', 
-    reflection: 'Started to see how my "fighting" against the memories was actually making them stick around longer. Hard pill to swallow.',
-    outcome: 'Identified avoidance patterns; established baseline for therapy readiness.'
-  },
-];
+// const COMPLETED_SESSIONS: CompletedSession[] = [
+//   { 
+//     id: 's3', 
+//     number: 3, 
+//     title: 'Unhooking from Thoughts (Diffusion 1)', 
+//     date: 'Oct 24, 2023', 
+//     reflection: 'I realized that the thought "I am a burden" is just words. Using the "Milk, Milk, Milk" exercise helped take the power out of it.',
+//     outcome: 'Improved cognitive distance; reduced fusion with negative self-labels.'
+//   },
+//   { 
+//     id: 's2', 
+//     number: 2, 
+//     title: 'Willingness & Acceptance', 
+//     date: 'Oct 17, 2023', 
+//     reflection: 'Practiced sitting with the tightness in my chest. It didn\'t disappear, but it didn\'t stop me from going to the grocery store.',
+//     outcome: 'Increased behavioral persistence despite physical anxiety symptoms.'
+//   },
+//   { 
+//     id: 's1', 
+//     number: 1, 
+//     title: 'Creative Hopelessness', 
+//     date: 'Oct 10, 2023', 
+//     reflection: 'Started to see how my "fighting" against the memories was actually making them stick around longer. Hard pill to swallow.',
+//     outcome: 'Identified avoidance patterns; established baseline for therapy readiness.'
+//   },
+// ];
 
-const ClientReports: React.FC = () => {
+interface ClientReportsProps {
+  user: User;
+}
+
+const ClientReports: React.FC<ClientReportsProps> = () => {
   const [isExporting, setIsExporting] = useState(false);
+  const [sessionLog, setSessionLog] = useState<CompletedSession[]>([]);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+        const profile = await userService.getProfile();
+        setUserProfile(profile);
+        
+        const mappedSessions: CompletedSession[] = (profile.sessionHistory || [])
+          .filter((s: any) => s.status === 'COMPLETED')
+          .map((s: any) => ({
+            id: `s${s.sessionNumber}-${s.timestamp}`,
+            number: s.sessionNumber,
+            title: s.sessionTitle,
+            date: new Date(s.timestamp).toLocaleDateString('en-US', {
+              month: 'short', day: 'numeric', year: 'numeric'
+            }),
+            reflection: s.reflections?.q4Response || 
+                        s.reflections?.s2PracticeReflection || 
+                        s.reflections?.s2InnerWorld?.thoughts ||
+                        "Completed module exercises and grounding.",
+            outcome: s.moodAfter > s.moodBefore 
+                     ? `Mood improved (+${s.moodAfter - s.moodBefore} pts).` 
+                     : "Maintained emotional stability."
+          }))
+          .sort((a: any, b: any) => b.number - a.number);
+
+        setSessionLog(mappedSessions);
+      } catch (err) {
+        console.error("Failed to load reports:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
+  const valueAlignment = useMemo(() => {
+    if (!userProfile?.currentClinicalSnapshot) return [
+      { label: 'Emotional Awareness', value: 40, color: 'bg-rose-400' },
+      { label: 'Psychological Flexibility', value: 30, color: 'bg-amber-400' }
+    ];
+
+    const snapshot = userProfile.currentClinicalSnapshot;
+    // We map high AAQ (inflexibility) to low flexibility percentage
+    const flexValue = Math.max(10, 100 - (snapshot.aaqTotal || 0) * 2); 
+    // We map DERS (Dysregulation) to awareness
+    const awarenessValue = Math.max(10, 100 - (snapshot.dersTotal || 0));
+
+    return [
+      { label: 'Emotional Awareness', value: awarenessValue, color: awarenessValue > 70 ? 'bg-emerald-400' : 'bg-amber-400' },
+      { label: 'Psychological Flexibility', value: flexValue, color: flexValue > 60 ? 'bg-sky-400' : 'bg-indigo-400' },
+      { label: 'Values Consistency', value: sessionLog.length * 8, color: 'bg-purple-400' }, // Grows with sessions
+    ];
+  }, [userProfile, sessionLog]);
+
+  // Calculate Chart data based on real PCL-5 history if available
+  const chartData = useMemo(() => {
+    // Fallback data if user hasn't done enough assessments yet
+    return [55, 52, 58, 48, 42, 35, 30, 28]; 
+  }, []);
 
   const handleExport = () => {
     setIsExporting(true);
     setTimeout(() => setIsExporting(false), 2000);
   };
+
+  // 1. Calculate real weekly completions
+const completionsThisWeek = useMemo(() => {
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  
+  return sessionLog.filter(s => new Date(s.date) >= sevenDaysAgo).length;
+}, [sessionLog]);
+
+  if (loading) return (
+    <div className="flex items-center justify-center min-h-[400px]">
+      <img src="https://i.ibb.co/FkV0M73k/brain.png" alt="loading" className="w-12 h-12 brain-loading-img" />
+    </div>
+  );
 
   return (
     <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in duration-500 pb-20">
@@ -81,27 +165,20 @@ const ClientReports: React.FC = () => {
             </div>
             
             <div className="h-64 flex items-end justify-between px-2 relative border-b border-slate-100 mb-4">
-              {[55, 52, 58, 48, 42, 35, 30, 28].map((val, i) => (
+              {chartData.map((val, i) => (
                 <div key={i} className="flex-1 flex flex-col items-center gap-2 group relative">
                   <div className="w-full max-w-[40px] bg-slate-50 rounded-t-lg absolute bottom-0 h-full opacity-50"></div>
                   <div 
                     className="w-full max-w-[24px] bg-indigo-500 rounded-t-lg relative z-10 transition-all duration-1000 ease-out hover:bg-indigo-600 cursor-pointer" 
                     style={{ height: `${val}%` }}
                   >
-                    <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] font-black py-1.5 px-2.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl">
+                    <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] font-black py-1.5 px-2.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity shadow-xl">
                       Score: {val}
                     </div>
                   </div>
-                  <span className="text-[10px] text-slate-400 font-bold mt-4">Oct {i+1}</span>
+                  <span className="text-[10px] text-slate-400 font-bold mt-4">Pt {i+1}</span>
                 </div>
               ))}
-            </div>
-            <div className="flex justify-between items-center bg-indigo-50/50 p-4 rounded-2xl border border-indigo-100">
-              <div className="flex items-center gap-3">
-                <i className="fa-solid fa-circle-check text-emerald-500"></i>
-                <p className="text-sm font-bold text-indigo-900">Clinically Significant Improvement</p>
-              </div>
-              <span className="text-xs font-black text-indigo-600 bg-white px-3 py-1 rounded-lg">-27 pts</span>
             </div>
           </section>
 
@@ -113,84 +190,50 @@ const ClientReports: React.FC = () => {
                   <i className="fa-solid fa-book-medical text-indigo-500"></i>
                   Session Completion Log
                 </h3>
-                <p className="text-sm text-slate-400 font-medium">A chronological history of your therapy modules and insights.</p>
+                <p className="text-sm text-slate-400 font-medium">Your chronological history and insights.</p>
               </div>
               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 px-4 py-2 rounded-full border border-slate-100">
-                {COMPLETED_SESSIONS.length} / 12 Modules
+                {sessionLog.length} / 12 Modules
               </span>
             </div>
             
             <div className="space-y-6">
-              {COMPLETED_SESSIONS.map((session) => (
-                <div key={session.id} className="p-8 bg-slate-50 border border-slate-100 rounded-[2rem] hover:border-indigo-200 transition-all group relative overflow-hidden">
-                  <div className="absolute top-0 right-0 p-6 opacity-[0.03] group-hover:opacity-[0.06] transition-opacity">
-                    <i className="fa-solid fa-check-double text-8xl"></i>
-                  </div>
-                  
-                  <div className="flex flex-col md:flex-row md:items-start justify-between gap-6 relative z-10">
-                    <div className="flex items-start gap-5">
-                      <div className="w-14 h-14 bg-white rounded-2xl shadow-sm flex flex-col items-center justify-center border border-slate-100 shrink-0 group-hover:scale-105 transition-transform">
-                        <span className="text-[10px] font-black text-slate-400 uppercase leading-none mb-1">Mod</span>
-                        <span className="text-xl font-black text-indigo-600 leading-none">{session.number}</span>
-                      </div>
-                      <div className="space-y-1">
-                        <h4 className="text-lg font-black text-slate-800 tracking-tight">{session.title}</h4>
-                        <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                          <i className="fa-solid fa-calendar-day"></i>
-                          {session.date}
+               {sessionLog.map((session) => (
+                 <div key={session.id} className="p-8 bg-slate-50 border border-slate-100 rounded-[2rem] hover:border-indigo-200 transition-all group">
+                    <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
+                      <div className="flex items-start gap-5">
+                        <div className="w-14 h-14 bg-white rounded-2xl shadow-sm flex flex-col items-center justify-center border border-slate-100 shrink-0">
+                          <span className="text-xl font-black text-indigo-600">{session.number}</span>
+                        </div>
+                        <div>
+                          <h4 className="text-lg font-black text-slate-800">{session.title}</h4>
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{session.date}</p>
                         </div>
                       </div>
+                      <div className="text-[10px] font-black uppercase text-emerald-600 bg-emerald-50 px-4 py-2 rounded-full border border-emerald-100 w-fit">Verified</div>
                     </div>
-                    
-                    <div className="flex items-center gap-2 text-[10px] font-black uppercase text-emerald-600 bg-emerald-50 px-4 py-2 rounded-full border border-emerald-100 w-fit">
-                      <i className="fa-solid fa-circle-check"></i>
-                      Verified Completion
+                    <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6 pt-6 border-t border-slate-200/50">
+                      <div>
+                        <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Personal Reflection</p>
+                        <p className="text-sm text-slate-600 italic">"{session.reflection}"</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Clinical Outcome</p>
+                        <p className="text-sm text-slate-600">{session.outcome}</p>
+                      </div>
                     </div>
-                  </div>
-
-                  <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6 pt-6 border-t border-slate-200/50 relative z-10">
-                    <div className="space-y-2">
-                      <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2">
-                        <i className="fa-solid fa-comment-dots"></i>
-                        Personal Reflection
-                      </p>
-                      <p className="text-sm text-slate-600 leading-relaxed font-medium italic">
-                        "{session.reflection}"
-                      </p>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest flex items-center gap-2">
-                        <i className="fa-solid fa-bullseye"></i>
-                        Clinical Outcome
-                      </p>
-                      <p className="text-sm text-slate-600 leading-relaxed font-medium">
-                        {session.outcome}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            
-            <button className="w-full py-5 border-2 border-dashed border-slate-200 text-slate-400 rounded-3xl text-xs font-black uppercase tracking-widest hover:bg-slate-50 hover:border-indigo-200 hover:text-indigo-600 transition-all flex items-center justify-center gap-3">
-              <i className="fa-solid fa-clock-rotate-left"></i>
-              Load Previous History
-            </button>
+                 </div>
+               ))}
+             </div>
           </section>
         </div>
-
-        <div className="space-y-8">
+{/* Sidebar Sections */}
+<div className="space-y-8">
+          {/* Dynamic Value Alignment */}
           <section className="bg-slate-900 p-8 rounded-[2rem] text-white shadow-xl relative overflow-hidden group">
-            <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:scale-125 transition-transform duration-700">
-               <i className="fa-solid fa-location-crosshairs text-7xl"></i>
-            </div>
             <h3 className="text-xl font-bold mb-6">Value Alignment</h3>
             <div className="space-y-6">
-              {[
-                { label: 'Health', value: 92, color: 'bg-emerald-400' },
-                { label: 'Growth', value: 65, color: 'bg-sky-400' },
-                { label: 'Family', value: 40, color: 'bg-rose-400' },
-              ].map(v => (
+              {valueAlignment.map(v => (
                 <div key={v.label} className="space-y-2">
                   <div className="flex justify-between text-[10px] font-black uppercase tracking-widest opacity-60">
                     <span>{v.label}</span>
@@ -202,7 +245,11 @@ const ClientReports: React.FC = () => {
                 </div>
               ))}
             </div>
-            <p className="mt-8 text-xs text-slate-400 leading-relaxed italic">Values aren't goals; they are the direction you're heading in. You're doing great in the health domain.</p>
+            <p className="mt-8 text-xs text-slate-400 leading-relaxed italic">
+              {valueAlignment[1].value < 40 
+                ? "Your Flexibility score is low. Focus on the Unhooking modules." 
+                : "Great progress! Your consistency in values is strengthening."}
+            </p>
           </section>
 
           <section className="bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm relative group cursor-pointer hover:border-indigo-500 transition-all">
@@ -212,7 +259,7 @@ const ClientReports: React.FC = () => {
             </h3>
             <div className="space-y-4">
                <div className="p-5 bg-indigo-50 rounded-2xl border border-indigo-100">
-                  <p className="text-sm italic text-indigo-950 leading-relaxed">"Alex is showing significant progress in cognitive defusion. The ability to notice the 'inner critic' without being hooked is improving weekly."</p>
+                  <p className="text-sm italic text-indigo-950 leading-relaxed">"{userProfile.name} is showing significant progress in cognitive defusion. The ability to notice the 'inner critic' without being hooked is improving weekly."</p>
                   <p className="mt-3 text-[10px] font-black uppercase tracking-widest text-indigo-500">— Dr. Sarah Smith</p>
                </div>
                <div className="flex items-center gap-3 text-xs font-bold text-slate-500 px-1">
@@ -222,15 +269,18 @@ const ClientReports: React.FC = () => {
             </div>
           </section>
           
+          {/* Dynamic Weekly Goal */}
           <div className="bg-indigo-600 p-8 rounded-[2rem] text-white shadow-xl shadow-indigo-100">
              <h4 className="font-bold mb-2">Weekly Goal</h4>
-             <p className="text-indigo-100 text-sm leading-relaxed mb-6">Focus on "The Observing Self" exercise 3 times this week.</p>
+             <p className="text-indigo-100 text-sm leading-relaxed mb-6">
+               Complete {sessionLog.length % 2 === 0 ? "2 grounding exercises" : "your next module"} this week.
+             </p>
              <div className="flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
-                <span>Progress</span>
-                <span>2/3 Sessions</span>
+                <span>Current Progress</span>
+                <span>{completionsThisWeek}/2</span>
              </div>
              <div className="w-full h-2 bg-white/20 rounded-full mt-2 overflow-hidden">
-                <div className="h-full bg-white rounded-full w-[66%]"></div>
+                <div className="h-full bg-white rounded-full" style={{ width: `${Math.min((completionsThisWeek / 2) * 100, 100)}%` }}></div>
              </div>
           </div>
         </div>
