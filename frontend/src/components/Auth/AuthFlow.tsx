@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { UserRole } from "../../../types";
 
 interface AuthFlowProps {
@@ -12,6 +12,8 @@ const AuthFlow: React.FC<AuthFlowProps> = ({ onLogin }) => {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [resendTimer, setResendTimer] = useState(0);
+  const [canResend, setCanResend] = useState(false);
   const [step, setStep] = useState<AuthStep>("login");
   const [selectedRole, setSelectedRole] = useState<UserRole | null>(null);
   const [mfaCode, setMfaCode] = useState(["", "", "", "", "", ""]);
@@ -22,6 +24,26 @@ const AuthFlow: React.FC<AuthFlowProps> = ({ onLogin }) => {
     clinicId: "",
     license: "",
   });
+
+  // Add this effect inside AuthFlow
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+
+    if (step === "mfa" && resendTimer > 0) {
+      interval = setInterval(() => {
+        setResendTimer((prev) => prev - 1);
+      }, 1000);
+    } else if (resendTimer === 0) {
+      setCanResend(true);
+    }
+
+    return () => clearInterval(interval);
+  }, [step, resendTimer]);
+
+  // Trigger the timer when moving to MFA step
+  // Update your handleLogin and handleSignup to include:
+  // setResendTimer(60);
+  // setCanResend(false);
 
   const handleLogin = async () => {
     setError("");
@@ -38,7 +60,7 @@ const AuthFlow: React.FC<AuthFlowProps> = ({ onLogin }) => {
       const data = await response.json();
       if (response.ok) {
         console.log("DEBUG: Your MFA Code is:", data.tempCode); // Temporary helper
-        setStep('mfa');
+        setStep("mfa");
       }
       if (!response.ok) {
         throw new Error(data.message || "Login failed");
@@ -46,10 +68,11 @@ const AuthFlow: React.FC<AuthFlowProps> = ({ onLogin }) => {
       // Store the token (e.g., in localStorage)
       localStorage.setItem("token", data.token);
       if (data.tempCode) {
-        alert(`Debug MFA Code: ${data.tempCode}`); 
+        alert(`Debug MFA Code: ${data.tempCode}`);
       }
 
-      // Navigate to the next step
+      setResendTimer(60); // Start 60-second countdown
+      setCanResend(false);
       setStep("mfa");
     } catch (err: any) {
       setError(err.message);
@@ -60,38 +83,41 @@ const AuthFlow: React.FC<AuthFlowProps> = ({ onLogin }) => {
 
   const handleSignup = async () => {
     console.log("Starting signup process...");
-    setError('');
-    
+    setError("");
+
     if (!selectedRole) {
       console.error("Signup aborted: No role selected");
       setError("Please go back and select a role.");
       return;
     }
-  
+
     setIsLoading(true);
-  
+
     try {
-      console.log("Sending data to backend:", { ...formData, role: selectedRole });
-      const response = await fetch('http://localhost:5000/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      console.log("Sending data to backend:", {
+        ...formData,
+        role: selectedRole,
+      });
+      const response = await fetch("http://localhost:5000/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...formData,
           role: selectedRole,
         }),
       });
-  
+
       const data = await response.json();
       console.log("Backend response:", data);
-  
-      if (!response.ok) throw new Error(data.message || 'Registration failed');
-  
+
+      if (!response.ok) throw new Error(data.message || "Registration failed");
+
       // THIS IS THE CODE YOU NEED TO ENTER ON THE MFA SCREEN
       if (data.tempCode) {
-        alert(`Debug MFA Code: ${data.tempCode}`); 
+        alert(`Debug MFA Code: ${data.tempCode}`);
       }
-  
-      setStep('mfa');
+
+      setStep("mfa");
     } catch (err: any) {
       console.error("Fetch error:", err);
       setError(err.message);
@@ -104,10 +130,10 @@ const AuthFlow: React.FC<AuthFlowProps> = ({ onLogin }) => {
     setError("");
     setIsLoading(true);
     const code = mfaCode.join("");
-    
+
     // Use formData.email for signups, email for logins
     const userEmail = email || formData.email;
-    
+
     console.log("=== MFA VERIFICATION ===");
     console.log("Email:", userEmail);
     console.log("Code:", code);
@@ -130,16 +156,19 @@ const AuthFlow: React.FC<AuthFlowProps> = ({ onLogin }) => {
       console.log("Token:", data.token);
       console.log("User:", data.user);
       console.log("===================");
-      
+
       if (!response.ok) throw new Error(data.message || "Invalid MFA code");
 
       // 1. Store JWT
       localStorage.setItem("token", data.token);
-      
+
       // 2. Pass FULL USER DATA to parent, not just the role
       // The backend should return data.user with all user info
       if (data.user) {
-        console.log("Calling onLogin with user data:", data.user._id || data.user.id);
+        console.log(
+          "Calling onLogin with user data:",
+          data.user._id || data.user.id
+        );
         localStorage.setItem("token", data.token);
         onLogin(data.user._id || data.user.id, data.user);
         setStep("login");
@@ -484,8 +513,7 @@ const AuthFlow: React.FC<AuthFlowProps> = ({ onLogin }) => {
                 Two-Factor Authentication
               </h2>
               <p className="text-slate-500 text-sm mt-2 leading-relaxed">
-                We've sent a 6-digit code to your registered mobile device
-                ending in ••82.
+                We've sent a 6-digit code to your email address
               </p>
             </div>
 
@@ -506,16 +534,22 @@ const AuthFlow: React.FC<AuthFlowProps> = ({ onLogin }) => {
             <div className="space-y-4">
               <button
                 onClick={handleVerifyMfa}
-                disabled={isLoading || mfaCode.includes('')}
+                disabled={isLoading || mfaCode.includes("")}
                 className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all"
               >
-                {isLoading ? 'Verifying...' : 'Verify & Enter'}
+                {isLoading ? "Verifying..." : "Verify & Enter"}
               </button>
+              {/* Replace the static "Resend code in 42s" button with this */}
               <button
-                onClick={() => setStep("login")}
-                className="w-full text-center text-sm font-bold text-slate-400 hover:text-slate-600 uppercase tracking-widest"
+                onClick={handleLogin} // Reusing the same function!
+                disabled={!canResend || isLoading}
+                className={`w-full text-center text-sm font-bold uppercase tracking-widest transition-colors ${
+                  canResend
+                    ? "text-indigo-600 hover:text-indigo-800 cursor-pointer"
+                    : "text-slate-400 cursor-not-allowed"
+                }`}
               >
-                Resend code in 42s
+                {canResend ? "Resend Code" : `Resend code in ${resendTimer}s`}
               </button>
             </div>
 

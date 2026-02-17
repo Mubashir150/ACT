@@ -50,6 +50,12 @@ export interface User {
   };
   sessionHistory?: SessionResult[];
   sessionData?: SessionData[];
+  notificationSettings?: {
+    email: boolean;
+    push: boolean;
+    sms: boolean;
+    pushSubscription?: any; // Mixed type for browser push tokens
+  };
   createdAt?: string; 
   updatedAt?: string;
 }

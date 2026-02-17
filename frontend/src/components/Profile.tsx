@@ -53,6 +53,11 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
         
         // 1. Update local state immediately for the UI
         setProfileData(freshData);
+        setNotifications({
+          email: freshData.notificationSettings?.email ?? true,
+          push: notificationService.hasPermission(), // Browser permission is the ultimate truth for Push
+          sms: freshData.notificationSettings?.sms ?? false,
+        });
         setEditData({
           name: freshData.name,
           email: freshData.email,
@@ -132,12 +137,31 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdateUser }) => {
   };
 
   const toggleNotif = async (key: keyof typeof notifications) => {
+    let isGranted = notifications[key];
+  
+    // 1. Handle the Browser Permission Request
     if (key === "push" && !notifications.push) {
-      const granted = await notificationService.requestPermission();
-      setNotifications((prev) => ({ ...prev, push: granted }));
-      return;
+      isGranted = await notificationService.requestPermission();
+      if (!isGranted) return; // User denied permission
     }
-    setNotifications((prev) => ({ ...prev, [key]: !prev[key] }));
+  
+    const newValue = key === "push" ? isGranted : !notifications[key];
+  
+    // 2. Update Local State
+    setNotifications((prev) => ({ ...prev, [key]: newValue }));
+  
+    // 3. PERSIST TO DATABASE
+    try {
+      await userService.updateProfile({
+        notificationSettings: {
+          ...notifications,
+          [key]: newValue
+        }
+      });
+    } catch (error) {
+      console.error("Failed to save notification preference", error);
+      // Optional: Rollback local state if API fails
+    }
   };
 
   const testPushNotification = () => {

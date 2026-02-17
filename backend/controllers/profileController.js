@@ -23,15 +23,17 @@ export const getUserProfile = async (req, res) => {
  */
 export const updateUserProfile = async (req, res) => {
   try {
-    const userId = req.user.id; // Assuming `req.user` is populated by auth middleware
-    const { name, email, phoneNumber, profileImage } = req.body;
+    const userId = req.user.id;
+    
+    // Use the spread operator to include hasConsented, notificationSettings, etc.
+    const updates = { ...req.body };
 
-    // Find the user and update the fields
+    // Find the user and update with the dynamic updates object
     const updatedUser = await User.findByIdAndUpdate(
       userId,
-      { name, email, phoneNumber, profileImage },
-      { new: true, runValidators: true } // Return the updated user and validate the fields
-    ).select('-password'); // Exclude password from the response
+      { $set: updates }, // Use $set to ensure only provided fields are touched
+      { new: true, runValidators: true }
+    ).select('-password');
 
     if (!updatedUser) {
       return res.status(404).json({ message: 'User not found' });

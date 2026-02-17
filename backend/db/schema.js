@@ -149,7 +149,13 @@ const UserSchema = new Schema({
     dersTotal: Number,
     aaqTotal: Number,
     lastUpdate: Date
-  }
+  },
+  notificationSettings: {
+    email: { type: Boolean, default: true },
+    push: { type: Boolean, default: false },
+    sms: { type: Boolean, default: false },
+    pushSubscription: { type: Schema.Types.Mixed, default: null } // Important for offline alerts
+  },
 }, { timestamps: true });
 
 // Indices for performance

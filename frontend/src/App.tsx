@@ -35,12 +35,13 @@ import SecuritySettings from './components/SecuritySettings';
 import PanicModal from './components/PanicModal';
 import ConsentModal from './components/ConsentModal';
 import { storageService } from './services/storageService';
+import { userService } from './services/userService';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isResolvingAuth, setIsResolvingAuth] = useState(true);
-  const [currentUser, setCurrentUser] = useState<User>(storageService.getUsers()[UserRole.CLIENT]);
-  const [currentUserKey, setCurrentUserKey] = useState<string>(UserRole.CLIENT);
+  const [currentUser, setCurrentUser] = useState<User | null>(null); 
+const [currentUserKey, setCurrentUserKey] = useState<string>('');
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [isPanicOpen, setIsPanicOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -82,15 +83,10 @@ const App: React.FC = () => {
 
   // Sync state with storage service whenever user data changes
   const handleLogin = (roleOrKey: string, userData?: User) => {
-    console.log('=== APP.TSX HANDLE LOGIN ===');
-    console.log('roleOrKey:', roleOrKey);
-    console.log('userData:', userData);
-    console.log('userData exists?:', !!userData);
-    console.log('===========================');
+    
     
     // If userData is provided (from AuthFlow), use it directly
     if (userData) {
-      console.log('✅ Using userData path');
       // Ensure user has a role, default to CLIENT if missing
       const userWithRole = {
         ...userData,
@@ -98,7 +94,7 @@ const App: React.FC = () => {
       };
       
       const userKey = (userData as any)._id || (userData as any).id || roleOrKey;
-      console.log('User key:', userKey);
+      
       
       setCurrentUser(userWithRole);
       setCurrentUserKey(userKey);
@@ -110,15 +106,18 @@ const App: React.FC = () => {
       // We don't store 'authenticated' here - the real token is already in localStorage
       localStorage.setItem('current_user_key', userKey);
     } else {
-      console.log('❌ Using fallback path (demo accounts)');
       // Fallback for role-based switching (demo accounts)
       const users = storageService.getUsers();
       
       setCurrentUser(users[roleOrKey]);
       setCurrentUserKey(roleOrKey);
       setIsAuthenticated(true);
-      localStorage.setItem('token', 'authenticated');
+      localStorage.setItem('token', 'authenticated'); // Placeholder token for demo purposes
+    
       localStorage.setItem('current_user_key', roleOrKey);
+
+      setShowOnboarding(false); 
+      setIsAuthenticated(true);
     }
   };
 
@@ -135,13 +134,13 @@ const App: React.FC = () => {
     setCurrentUserKey('');
   };
 
-  const handleAcceptConsent = () => {
-    const updated = { 
-      ...currentUser, 
+  const handleAcceptConsent = async() => {
+    const updatedUser = await userService.updateProfile({ 
       hasConsented: true,
       consentTimestamp: new Date().toISOString() 
-    };
-    updateUser(updated);
+    });
+    console.log("Response from server after consent:", updatedUser);
+    updateUser(updatedUser);
   };
 
   const updateUser = (updated: User) => {
@@ -180,13 +179,15 @@ const App: React.FC = () => {
     return <AuthFlow onLogin={handleLogin} />;
   }
 
-  if (showOnboarding) {
-    return <ClinicOnboarding onComplete={() => setShowOnboarding(false)} />;
-  }
+  // Only show onboarding for Admins who haven't set up
+if (showOnboarding && currentUser.role === UserRole.ADMIN) {
+  return <ClinicOnboarding onComplete={() => setShowOnboarding(false)} />;
+}
 
-  if (currentUser.role === UserRole.CLIENT && !currentUser.hasConsented) {
-    return <ConsentModal onAccept={handleAcceptConsent} />;
-  }
+// Only show consent for Clients who haven't accepted
+if (currentUser.role === UserRole.CLIENT && currentUser.hasConsented === false) {
+  return <ConsentModal onAccept={handleAcceptConsent} />;
+}
 
   return (
     <HashRouter>
